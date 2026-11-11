@@ -193,6 +193,26 @@ tbody td{padding:9px 13px;font-size:13px;vertical-align:middle}
   .prt-t{font-weight:700;font-size:12pt;text-align:center}.prt-s{text-align:center;font-size:9pt}
   .prt-nb{page-break-inside:avoid}.prt-sig td{height:48px}
 }
+
+.org-tb{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:10px;flex-wrap:wrap;gap:8px}
+.org-seg{display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden}
+.org-seg button{background:var(--surface2);color:var(--muted);border:none;padding:7px 14px;font-size:12.5px;font-family:'DM Sans',sans-serif;cursor:pointer}
+.org-seg button.on{background:var(--accent);color:#fff;font-weight:600}
+.org-nota{font-size:12px;color:var(--muted)}
+.org-ley{display:flex;flex-wrap:wrap;gap:16px;font-size:11.5px;color:var(--text);margin:0 0 10px 2px;align-items:center}
+.org-ley span{display:inline-flex;align-items:center;gap:6px}
+.org-ley i{width:14px;height:12px;border-radius:3px;display:inline-block}
+.org-ley .o-r{background:#1f2a44;border:1px solid #8090b0}.org-ley .o-1{background:#dce8ff;border:1px solid #4f8ef7}
+.org-ley .o-n{background:#f5f7fb;border:1px solid #c3cbe0}.org-ley .o-v{background:#fff;border:1px dashed #9aa3b5}
+.org-wrap{background:#fff;border:1px solid var(--border);border-radius:var(--rl);overflow:auto;max-height:78vh}
+.org-wrap svg{display:block}
+.org-aviso{margin-top:12px;background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--r);padding:11px 14px;font-size:12.5px;line-height:1.55}
+.org-aviso.warn{border-left-color:var(--yellow)}
+.org-aviso a{color:var(--accent)}
+.org-asig{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:8px;margin-top:10px}
+.org-asig>div{display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:7px;padding:7px 9px}
+.org-asig>div span{flex:1;min-width:0}.org-asig small{display:block;color:var(--muted);font-size:11px}
+.org-asig select{max-width:190px}
 </style>
 </head>
 <body>
@@ -1440,10 +1460,10 @@ async function pdLoad(){
     const res=await fetch(PD_API+(PD_API.includes('?')?'&':'?')+'t='+Date.now());
     const rows=await res.json();
     if(!Array.isArray(rows)) throw new Error('respuesta inesperada');
-    PD={perfiles:[],evals:[]};
+    PD={perfiles:[],evals:[],org:{}};
     let seedVer='';
     rows.forEach(r=>{const k=String(r[0]||'');let v;try{v=typeof r[1]==='string'?JSON.parse(r[1]):r[1];}catch(e){return;}
-      if(k.startsWith('pd_perfil:'))PD.perfiles.push(v);else if(k.startsWith('pd_eval:'))PD.evals.push(v);else if(k==='pd_meta:seed')seedVer=v;});
+      if(k.startsWith('pd_perfil:'))PD.perfiles.push(v);else if(k.startsWith('pd_eval:'))PD.evals.push(v);else if(k==='pd_meta:seed')seedVer=v;else if(k==='pd_meta:org')PD.org=v;});
     pdCache();pdSync('✓ Sincronizado','var(--green)');
     if(seedVer!==PD_SEED_VER)pdSembrar();
   }catch(e){
@@ -1713,5 +1733,239 @@ function pdPintarGuia(){
 // Arranque: espera a que el tablero cargue sus datos (personas y plan)
 let pdTries=0;(function pdBoot(){ if(pdTries++<60&&(typeof DB==='undefined'||!document.getElementById('hYear')||document.getElementById('hYear').textContent==="—")){return setTimeout(pdBoot,300);} pdLoad(); })();
 </script>
+<script>
+// ══════════════════════════════════════════════════════════════
+// ORGANIGRAMA AUTOMÁTICO — se arma solo con "Reporta a" de cada perfil
+//  · Funcional: solo puestos      · Nominal: puestos + personas activas
+//  Los superiores que figuran en un perfil pero no tienen perfil cargado
+//  aparecen en recuadro punteado. Ajustes manuales → clave pd_meta:org
+// ══════════════════════════════════════════════════════════════
+let ORG_MODO='funcional';
+const ORG_EMPRESA='Aromitalia Argentina';
+const ORG_STOP=new Set(['de','del','la','el','las','los','y','e','a','en','para','con']);
+const ORG_SIN={gerenta:'gerente',gte:'gerente',coordinadora:'coordinador',coord:'coordinador',encargada:'encargado',enc:'encargado',
+  administrativa:'administrativo',tecnica:'tecnico',operaria:'operario',operador:'operario',operadora:'operario',jefa:'jefe',
+  directora:'director',supervisora:'supervisor',resp:'responsable',mkt:'marketing',log:'logistica',int:'interna',asistenta:'asistente'};
+function orgToks(s){return pdN(s).replace(/\([^)]*\)/g,' ').replace(/[^a-z0-9ñ]+/g,' ').split(' ').filter(Boolean).map(w=>ORG_SIN[w]||w).filter(w=>!ORG_STOP.has(w));}
+function orgKey(s){return orgToks(s).join(' ');}
+function orgTitulo(s){const m=new Set(['de','del','y','e','la','el','las','los','a','en','para','con']);
+  return String(s||'').toLowerCase().replace(/(^|[\s(\-\/])([^\s(\-\/])/g,(x,a,b)=>a+b.toUpperCase()).split(' ').map((w,i)=>i&&m.has(w.toLowerCase())?w.toLowerCase():w).join(' ')
+    .replace(/\((.*?)\)/g,(x,a)=>'('+a.toUpperCase()+')');}
+// Busca el nodo que mejor corresponde a un texto de puesto. Devuelve {id} | {amb:[ids]} | null
+function orgMatch(txt,nodos,excluir){
+  const q=orgToks(txt); if(!q.length) return null;
+  const k=q.join(' '), full=pdN(txt);
+  const ex=nodos.filter(n=>n.id!==excluir&&n.key===k);
+  if(ex.length===1) return {id:ex[0].id};
+  if(ex.length>1){const f=ex.find(n=>pdN(n.label)===full)||ex.find(n=>!/\(/.test(n.label)); return f?{id:f.id}:{amb:ex.map(n=>n.id)};}
+  let best=[],bs=0;
+  nodos.forEach(n=>{
+    if(n.id===excluir||!n.toks.length||n.toks[0]!==q[0]) return;
+    const A=new Set(q),B=new Set(n.toks); let inter=0; A.forEach(w=>{if(B.has(w))inter++;});
+    const cont=inter/Math.min(A.size,B.size); if(cont<0.75||(inter<2&&Math.min(A.size,B.size)>1)) return;
+    const sc=cont*10+inter/(A.size+B.size-inter);
+    if(sc>bs+1e-9){bs=sc;best=[n.id];} else if(Math.abs(sc-bs)<1e-9) best.push(n.id);
+  });
+  return best.length===1?{id:best[0]}:best.length?{amb:best}:null;
+}
+function orgCfg(){if(!PD.org||typeof PD.org!=='object')PD.org={};PD.org.virt=PD.org.virt||{};PD.org.pers=PD.org.pers||{};return PD.org;}
+
+// Arma la estructura completa (nodos, dependencias, personas)
+function orgArmar(){
+  const cfg=orgCfg();
+  const nodos=PD.perfiles.map(p=>({id:'p:'+p.id,perfil:p,label:p.titulo||'(sin título)',key:orgKey(p.titulo),toks:orgToks(p.titulo),virtual:false,sup:'',personas:[]}));
+  const byId={}; nodos.forEach(n=>byId[n.id]=n);
+  const virtual=txt=>{const k=orgKey(txt); if(!k) return '';
+    const id='v:'+k; if(!byId[id]){const n={id,label:orgTitulo(txt).trim(),key:k,toks:orgToks(txt),virtual:true,sup:'',personas:[],refs:0};nodos.push(n);byId[id]=n;} return id;};
+  // dependencias de los perfiles
+  nodos.filter(n=>!n.virtual).forEach(n=>{
+    const t=(n.perfil.superior||n.perfil.reporta||'').trim(); if(!t) return;
+    const m=orgMatch(t,nodos.filter(x=>!x.virtual),n.id);
+    n.sup=m&&m.id?m.id:virtual(t);
+    if(byId[n.sup]&&byId[n.sup].virtual) byId[n.sup].refs++;
+  });
+  // dependencias de los puestos sin perfil (ajuste manual)
+  nodos.filter(n=>n.virtual).forEach(n=>{const s=cfg.virt[n.key]; if(s&&byId[s]&&s!==n.id) n.sup=s;});
+  // cortar ciclos
+  nodos.forEach(n=>{let c=n.sup,g=0; while(c&&g++<80){if(c===n.id){n.sup='';n.ciclo=true;break;} c=byId[c]?byId[c].sup:'';}});
+  // personas
+  const sinAsignar=[];
+  pdPersonas().filter(x=>x.activo!==false&&x.nombre).forEach(x=>{
+    const o=cfg.pers[x.nombre];
+    if(o==='-') return;                                  // excluida a propósito
+    let id=o&&byId[o]?o:'';
+    let amb=[];
+    if(!id){const m=orgMatch(x.puesto||'',nodos,null); if(m&&m.id) id=m.id; else if(m&&m.amb) amb=m.amb;}
+    if(id) byId[id].personas.push(x.nombre); else sinAsignar.push({nombre:x.nombre,puesto:x.puesto||'',amb});
+  });
+  nodos.forEach(n=>{ if(!n.virtual&&n.perfil.designado&&!n.personas.some(p=>pdN(p)===pdN(n.perfil.designado))) n.personas.push(n.perfil.designado);
+    n.personas.sort((a,b)=>a.localeCompare(b,'es'));});
+  return {nodos,byId,sinAsignar};
+}
+
+function orgModo(m){ORG_MODO=m;document.querySelectorAll('#pd-org .org-seg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));pdPintarOrg();}
+
+function pdPintarOrg(){
+  const cont=pd$('pd-org'); if(!cont) return;
+  if(!cont.dataset.ok){
+    cont.dataset.ok='1';
+    cont.innerHTML=`<div class="tb org-tb">
+        <div class="org-seg"><button data-m="funcional" class="on" onclick="orgModo('funcional')">Funcional · puestos</button><button data-m="nominal" onclick="orgModo('nominal')">Nominal · con nombres</button></div>
+        <span id="orgNota" class="org-nota"></span><span style="margin-left:auto"></span>
+        <button class="btn btn-g btn-sm" onclick="orgImprimir()">🖨 Imprimir / PDF</button>
+        <button class="btn btn-p btn-sm" onclick="orgExportarSVG()">⬇ Exportar SVG</button></div>
+      <div class="org-ley"><span><i class="o-r"></i>Nivel máximo</span><span><i class="o-1"></i>Primer nivel</span><span><i class="o-n"></i>Puesto con perfil</span><span><i class="o-v"></i>Figura como superior pero no tiene perfil cargado</span><span style="color:var(--muted)">Doble clic en un puesto para editar su perfil</span></div>
+      <div class="org-wrap"><svg id="orgSVG" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div id="orgAvisos"></div>
+      <div class="tw" style="margin-top:16px"><div class="tb"><b style="font-size:13px">Estructura de puestos</b><span style="font-size:12px;color:var(--muted);margin-left:10px">Se lee del campo "Reporta a" de cada perfil. Si algo quedó mal colgado, cambialo acá y se guarda en el perfil.</span></div>
+        <div class="tscroll"><table><thead><tr><th>Puesto</th><th style="width:34%">Reporta a</th><th>Personas</th><th style="width:70px"></th></tr></thead><tbody id="orgTabla"></tbody></table></div></div>`;
+  }
+  const E=orgArmar(); ORG_ULT=E;
+  pd$('orgNota').textContent=ORG_MODO==='nominal'?'Se arma con las personas activas de la pestaña Personas':'Se arma solo con la jerarquía de los perfiles';
+  orgDibujar(E);
+  // avisos
+  const virt=E.nodos.filter(n=>n.virtual);
+  let av='';
+  if(virt.length) av+=`<div class="org-aviso"><b>Puestos sin perfil cargado (${virt.length}):</b> ${virt.map(n=>pdEsc(n.label)).join(' · ')}. Aparecen en el organigrama porque otros perfiles reportan a ellos. <a href="#" onclick="pdSub('perf',document.querySelector('.pd-sub [data-pd=perf]'));pdEditarPerfil();return false">＋ Cargar perfil</a></div>`;
+  if(ORG_MODO==='nominal'&&E.sinAsignar.length){
+    const opts=E.nodos.slice().sort((a,b)=>a.label.localeCompare(b.label,'es')).map(n=>`<option value="${n.id}">${pdEsc(orgTitulo(n.label))}${n.virtual?' (sin perfil)':''}</option>`).join('');
+    av+=`<div class="org-aviso warn"><b>Personas que no se pudieron ubicar (${E.sinAsignar.length})</b> — su puesto en la pestaña Personas no coincide con ningún perfil. Elegí dónde van y queda guardado:
+      <div class="org-asig">${E.sinAsignar.map(x=>`<div><span><b>${pdEsc(x.nombre)}</b><small>${pdEsc(x.puesto||'sin puesto')}${x.amb.length?' · coincide con más de un perfil':''}</small></span>
+      <select class="fs" onchange="orgAsignarPersona(${pdEsc(JSON.stringify(x.nombre))},this.value)"><option value="">— elegir puesto —</option>${opts}<option value="-">No mostrar en el organigrama</option></select></div>`).join('')}</div></div>`;
+  }
+  if(ORG_MODO==='nominal'&&Object.keys(orgCfg().pers).length) av+=`<div style="font-size:11.5px;color:var(--muted);margin-top:6px">${Object.keys(orgCfg().pers).length} persona(s) ubicadas a mano · <a href="#" onclick="orgResetPersonas();return false">volver a ubicarlas automáticamente</a></div>`;
+  pd$('orgAvisos').innerHTML=av;
+  // tabla
+  const prof=n=>{let d=0,c=n.sup;while(c&&d<50){d++;c=E.byId[c]?E.byId[c].sup:'';}return d;};
+  const orden=[]; const vis=new Set();
+  const hijos=id=>E.nodos.filter(x=>x.sup===id).sort((a,b)=>a.label.localeCompare(b.label,'es'));
+  const rec=(n,d)=>{if(vis.has(n.id))return;vis.add(n.id);orden.push([n,d]);hijos(n.id).forEach(h=>rec(h,d+1));};
+  E.nodos.filter(n=>!n.sup).sort((a,b)=>(hijos(b.id).length-hijos(a.id).length)).forEach(r=>rec(r,0));
+  E.nodos.forEach(n=>{if(!vis.has(n.id))rec(n,prof(n));});
+  const optsSup=self=>`<option value="">— nivel máximo (no reporta a nadie) —</option>`+E.nodos.filter(x=>x.id!==self.id).sort((a,b)=>a.label.localeCompare(b.label,'es'))
+    .map(x=>`<option value="${x.id}"${x.id===self.sup?' selected':''}>${pdEsc(orgTitulo(x.label))}${x.virtual?' (sin perfil)':''}</option>`).join('');
+  pd$('orgTabla').innerHTML=orden.map(([n,d])=>`<tr><td style="padding-left:${12+d*18}px">${d?'<span style="color:var(--muted)">└ </span>':''}<b>${pdEsc(orgTitulo(n.label))}</b>${n.virtual?' <span class="badge" style="background:var(--surface3)">sin perfil</span>':''}${n.ciclo?' <span class="badge" style="color:var(--red)">dependencia circular</span>':''}
+      ${!n.virtual&&n.perfil.reporta&&n.sup&&pdN(E.byId[n.sup].label)!==pdN(n.perfil.reporta)?`<br><small style="color:var(--muted)">en el perfil dice: "${pdEsc(n.perfil.reporta)}"</small>`:''}</td>
+    <td><select class="fs" style="width:100%" onchange="orgCambiarSup('${n.id}',this.value)">${optsSup(n)}</select></td>
+    <td style="font-size:12px;color:var(--muted)">${n.personas.length?pdEsc(n.personas.join(', ')):'—'}</td>
+    <td>${n.virtual?'':`<button class="btn btn-g btn-xs" onclick="pdEditarPerfil('${n.perfil.id}')">✏️</button>`}</td></tr>`).join('');
+}
+let ORG_ULT=null;
+
+function orgDibujar(E){
+  const svg=pd$('orgSVG'), NS='http://www.w3.org/2000/svg'; svg.innerHTML='';
+  const el=(t,a,txt)=>{const e=document.createElementNS(NS,t);Object.entries(a).forEach(([k,v])=>e.setAttribute(k,v));if(txt!=null)e.textContent=txt;return e;};
+  const nominal=ORG_MODO==='nominal';
+  const W=nominal?176:158, HG=14, GV=34, PAD=24, IND=22, SG=10, MAXN=8, TOP=58;
+  const partir=(t,max,nl)=>{const ws=String(t).split(/\s+/);const L=[];let a='';ws.forEach(w=>{if(!a)a=w;else if((a+' '+w).length<=max)a+=' '+w;else{L.push(a);a=w;}});if(a)L.push(a);
+    if(L.length>nl){L.length=nl;L[nl-1]=L[nl-1].slice(0,max-1)+'…';}return L;};
+  if(!E.nodos.length){svg.setAttribute('viewBox','0 0 900 120');svg.appendChild(el('text',{x:450,y:60,'text-anchor':'middle','font-family':'DM Sans,sans-serif','font-size':13,fill:'#667'},'Cargá perfiles de puesto para generar el organigrama.'));return;}
+  const hijos=id=>E.nodos.filter(x=>x.sup===id).sort((a,b)=>{const ha=E.nodos.some(z=>z.sup===a.id),hb=E.nodos.some(z=>z.sup===b.id);return (hb-ha)||a.label.localeCompare(b.label,'es');});
+  const caja={};
+  E.nodos.forEach(n=>{const l=partir(n.label,nominal?25:22,3);let nm=[];
+    if(nominal){nm=n.personas.length>MAXN?[...n.personas.slice(0,MAXN-1),`+ ${n.personas.length-MAXN+1} más`]:n.personas.slice(); if(!nm.length) nm=[n.virtual?'':'Vacante'].filter(Boolean);}
+    const h=nominal?16+l.length*11.5+(n.virtual?9:0)+(nm.length?10+nm.length*11.5:0)+6:Math.max(42,16+l.length*11.5+(n.virtual?10:0));
+    caja[n.id]={l,nm,h};});
+  // ¿apilar hijos? (todos hojas y 3 o más)
+  const apila=id=>{const h=hijos(id);return h.length>=3&&h.every(x=>!hijos(x.id).length);};
+  const med={};
+  // padre mixto: los hijos sin dependientes (4 o más) se agrupan en una columna para no ensanchar el gráfico
+  const hoja=x=>!hijos(x.id).length;
+  const items=id=>{const h=hijos(id),hs=h.filter(hoja);
+    if(hs.length>=4&&hs.length<h.length) return [...h.filter(x=>!hoja(x)).map(c=>({c,w:()=>med[c.id]})),{g:hs,w:()=>W+IND}];
+    return h.map(c=>({c,w:()=>med[c.id]}));};
+  const medir=(n,g)=>{const h=g>60?[]:hijos(n.id);let w;
+    if(!h.length) w=W; else if(apila(n.id)) w=W+IND; else{h.forEach(x=>medir(x,g+1)); const it=items(n.id); w=Math.max(W,it.reduce((s,x)=>s+x.w(),0)+HG*(it.length-1));}
+    med[n.id]=w;};
+  const raices=E.nodos.filter(n=>!n.sup).sort((a,b)=>hijos(b.id).length-hijos(a.id).length||a.label.localeCompare(b.label,'es'));
+  raices.forEach(r=>medir(r,0));
+  // alturas por nivel (solo nodos en fila)
+  const pos={}, lvH={}, grupo={};
+  const nivel=(n,d,g)=>{lvH[d]=Math.max(lvH[d]||0,caja[n.id].h); if(g>60||apila(n.id))return; items(n.id).forEach(x=>{if(x.c)nivel(x.c,d+1,g+1);});};
+  raices.forEach(r=>nivel(r,0,0));
+  const lvY={};let ya=TOP;for(let d=0;d<=Object.keys(lvH).length;d++){lvY[d]=ya;ya+=(lvH[d]||42)+GV;}
+  const ubicar=(n,x,d,g)=>{
+    const w=med[n.id], h=hijos(n.id);
+    if(!h.length||g>60){pos[n.id]={x:x+(w-W)/2,y:lvY[d]};return;}
+    if(apila(n.id)){pos[n.id]={x,y:lvY[d]};let yy=lvY[d]+caja[n.id].h+16;h.forEach(c=>{pos[c.id]={x:x+IND,y:yy,st:true};yy+=caja[c.id].h+SG;});return;}
+    const it=items(n.id);
+    let cx=x+(w-(it.reduce((s,i)=>s+i.w(),0)+HG*(it.length-1)))/2; const xs=[];
+    it.forEach(i=>{ if(i.c){ubicar(i.c,cx,d+1,g+1);xs.push(pos[i.c.id].x);}
+      else{grupo[n.id]=i.g;let yy=lvY[d+1];i.g.forEach(c=>{pos[c.id]={x:cx+IND,y:yy,st:true};yy+=caja[c.id].h+SG;});xs.push(cx);}
+      cx+=i.w()+HG;});
+    pos[n.id]={x:(xs[0]+xs[xs.length-1])/2,y:lvY[d]};
+  };
+  let cx=PAD; raices.forEach(r=>{ubicar(r,cx,0,0);cx+=med[r.id]+HG*2;});
+  const ids=Object.keys(pos);
+  const svgW=Math.max(900,Math.max(...ids.map(i=>pos[i].x))+W+PAD);
+  const svgH=Math.max(...ids.map(i=>pos[i].y+caja[i].h))+PAD;
+  svg.appendChild(el('rect',{x:0,y:0,width:svgW,height:svgH,fill:'#ffffff'}));
+  svg.appendChild(el('text',{x:PAD,y:26,'font-family':'Syne,DM Sans,sans-serif','font-size':15,'font-weight':700,fill:'#1f2a44'},`Organigrama ${nominal?'nominal':'funcional'} — ${ORG_EMPRESA}`));
+  svg.appendChild(el('text',{x:PAD,y:42,'font-family':'DM Sans,sans-serif','font-size':10.5,fill:'#6b7280'},`Generado automáticamente desde los perfiles de puesto · ${new Date().toLocaleDateString('es-AR')}`));
+  const LC='#4b5a7a';
+  // conectores
+  E.nodos.forEach(n=>{const P=pos[n.id];if(!P)return;const h=hijos(n.id).filter(c=>pos[c.id]);if(!h.length)return;
+    if(apila(n.id)){const x1=P.x+IND/2,y1=P.y+caja[n.id].h,last=pos[h[h.length-1].id];
+      svg.appendChild(el('path',{d:`M${x1},${y1} L${x1},${last.y+caja[h[h.length-1].id].h/2}`,stroke:LC,'stroke-width':1.2,fill:'none'}));
+      h.forEach(c=>{const q=pos[c.id];svg.appendChild(el('path',{d:`M${x1},${q.y+caja[c.id].h/2} L${q.x},${q.y+caja[c.id].h/2}`,stroke:LC,'stroke-width':1.2,fill:'none'}));});return;}
+    const gr=grupo[n.id]||[], fila=h.filter(c=>!gr.includes(c));
+    const x1=P.x+W/2,y1=P.y+caja[n.id].h,mid=Math.min(...h.map(c=>pos[c.id].y))-GV/2;
+    svg.appendChild(el('path',{d:`M${x1},${y1} L${x1},${mid}`,stroke:LC,'stroke-width':1.2,fill:'none'}));
+    fila.forEach(c=>{const x2=pos[c.id].x+W/2;svg.appendChild(el('path',{d:`M${x1},${mid} L${x2},${mid} L${x2},${pos[c.id].y}`,stroke:LC,'stroke-width':1.2,fill:'none'}));});
+    if(gr.length){const gx=pos[gr[0].id].x-IND/2,last=gr[gr.length-1];
+      svg.appendChild(el('path',{d:`M${x1},${mid} L${gx},${mid} L${gx},${pos[last.id].y+caja[last.id].h/2}`,stroke:LC,'stroke-width':1.2,fill:'none'}));
+      gr.forEach(c=>{const q=pos[c.id];svg.appendChild(el('path',{d:`M${gx},${q.y+caja[c.id].h/2} L${q.x},${q.y+caja[c.id].h/2}`,stroke:LC,'stroke-width':1.2,fill:'none'}));});}
+  });
+  // cajas
+  const prof=n=>{let d=0,c=n.sup;while(c&&d<50){d++;c=E.byId[c]?E.byId[c].sup:'';}return d;};
+  E.nodos.forEach(n=>{const P=pos[n.id];if(!P)return;const k=caja[n.id],d=prof(n);
+    const st=n.virtual?{f:'#ffffff',s:'#9aa3b5',t:'#4b5563',da:'5 3'}:d===0?{f:'#1f2a44',s:'#111827',t:'#ffffff'}:d===1?{f:'#dce8ff',s:'#4f8ef7',t:'#1f2a44'}:{f:'#f5f7fb',s:'#c3cbe0',t:'#1f2a44'};
+    const g=el('g',{});
+    const r={x:P.x,y:P.y,width:W,height:k.h,rx:7,fill:st.f,stroke:st.s,'stroke-width':d===0?1.4:1}; if(st.da)r['stroke-dasharray']=st.da;
+    g.appendChild(el('rect',r));
+    const yT=nominal?P.y+15:P.y+(k.h-(k.l.length*11.5+(n.virtual?10:0)))/2+9;
+    k.l.forEach((ln,i)=>g.appendChild(el('text',{x:P.x+W/2,y:yT+i*11.5,'text-anchor':'middle','font-family':'DM Sans,sans-serif','font-size':d===0?10.5:9.8,'font-weight':d<=1?700:600,fill:st.t},ln)));
+    if(n.virtual) g.appendChild(el('text',{x:P.x+W/2,y:yT+k.l.length*11.5,'text-anchor':'middle','font-family':'DM Sans,sans-serif','font-size':8,'font-style':'italic',fill:'#8a93a6'},'sin perfil cargado'));
+    if(nominal&&k.nm.length){const sy=P.y+16+k.l.length*11.5-4+(n.virtual?9:0);
+      g.appendChild(el('line',{x1:P.x+10,y1:sy,x2:P.x+W-10,y2:sy,stroke:d===0?'rgba(255,255,255,.35)':'#c3cbe0','stroke-width':.8}));
+      k.nm.forEach((nm,j)=>{const vac=nm==='Vacante'&&!n.personas.length;g.appendChild(el('text',{x:P.x+W/2,y:sy+12+j*11.5,'text-anchor':'middle','font-family':'DM Sans,sans-serif','font-size':9.4,
+        'font-style':vac?'italic':'normal',fill:vac?(d===0?'#aab6d3':'#9aa3b5'):st.t},nm.length>30?nm.slice(0,29)+'…':nm));});}
+    g.appendChild(el('title',{},orgTitulo(n.label)+(n.personas.length?'\n'+n.personas.join('\n'):'')+(n.virtual?'\n(sin perfil cargado)':'\n(doble clic para editar el perfil)')));
+    if(!n.virtual){g.style.cursor='pointer';g.addEventListener('dblclick',()=>pdEditarPerfil(n.perfil.id));}
+    svg.appendChild(g);});
+  svg.setAttribute('viewBox',`0 0 ${svgW} ${svgH}`); svg.setAttribute('width',svgW); svg.setAttribute('height',svgH);
+}
+
+function orgCambiarSup(id,sup){
+  const E=ORG_ULT||orgArmar(), n=E.byId[id]; if(!n) return;
+  let c=sup,g=0; while(c&&g++<80){if(c===id){toast('Eso armaría una dependencia circular','e');pdPintarOrg();return;} c=E.byId[c]?E.byId[c].sup:'';}
+  if(n.virtual){const cfg=orgCfg(); if(sup) cfg.virt[n.key]=sup; else delete cfg.virt[n.key]; pdPut('pd_meta:org',cfg);}
+  else{const p=PD.perfiles.find(x=>x.id===n.perfil.id); const lab=sup?orgTitulo(E.byId[sup].label):'';
+    p.reporta=lab; p.superior=lab; p.actualizado=new Date().toLocaleDateString('es-AR'); pdPut('pd_perfil:'+p.id,p); pdPintarPerfiles();}
+  toast('✓ Dependencia actualizada'); pdPintarOrg();
+}
+function orgAsignarPersona(nombre,id){if(!id)return;const cfg=orgCfg();cfg.pers[nombre]=id;pdPut('pd_meta:org',cfg);toast('✓ Ubicación guardada');pdPintarOrg();}
+function orgResetPersonas(){const cfg=orgCfg();cfg.pers={};pdPut('pd_meta:org',cfg);pdPintarOrg();}
+function orgSVGTexto(){return new XMLSerializer().serializeToString(pd$('orgSVG'));}
+function orgExportarSVG(){const b=new Blob([orgSVGTexto()],{type:'image/svg+xml'});const a=document.createElement('a');a.href=URL.createObjectURL(b);
+  a.download=`Organigrama_${ORG_MODO==='nominal'?'Nominal':'Funcional'}_Aromitalia_${new Date().toISOString().slice(0,10)}.svg`;a.click();}
+function orgImprimir(){const w=window.open('','_blank');if(!w){toast('Habilitá las ventanas emergentes para imprimir','e');return;}
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Organigrama ${ORG_MODO} — ${ORG_EMPRESA}</title><style>@page{size:A4 landscape;margin:8mm}body{margin:0}svg{width:100%;height:auto}</style></head><body>${orgSVGTexto()}<script>setTimeout(()=>print(),300)<\/script></body></html>`);w.document.close();}
+
+// ── Integración con el módulo de perfiles ──
+(function(){
+  const sub=document.querySelector('.pd-sub');
+  if(sub&&!sub.querySelector('[data-pd=org]')){const b=document.createElement('button');b.dataset.pd='org';b.textContent='🏢 Organigrama';b.onclick=function(){pdSub('org',this);};sub.insertBefore(b,sub.querySelector('[data-pd=crit]'));}
+  const crit=pd$('pd-crit'); if(crit&&!pd$('pd-org')){const d=document.createElement('div');d.id='pd-org';d.style.display='none';crit.parentNode.insertBefore(d,crit);}
+  const _sub=pdSub; pdSub=function(n,btn){
+    document.querySelectorAll('.pd-sub button').forEach(b=>b.classList.toggle('on',b===btn));
+    ['perf','eval','org','crit'].forEach(x=>{const e=pd$('pd-'+x);if(e)e.style.display=x===n?'':'none';});
+    if(n==='org') pdPintarOrg();
+  };
+  const _render=pdRender; pdRender=function(){_render(); if(pd$('pd-org')&&pd$('pd-org').style.display!=='none') pdPintarOrg();};
+  const _gp=pdGuardarPerfil; pdGuardarPerfil=function(){_gp(); if(pd$('pd-org').style.display!=='none') pdPintarOrg();};
+})();
+</script>
+
 </body>
 </html>
